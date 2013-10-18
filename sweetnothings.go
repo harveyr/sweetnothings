@@ -1,24 +1,24 @@
 package main
 
 import (
-	"fmt"
-	"log"
-	"flag"
-	"time"
-	"net"
-	"os"
 	"bufio"
 	"encoding/json"
+	"flag"
+	"fmt"
+	"log"
+	"net"
+	"os"
+	"time"
 )
 
 var colors = map[string]string{
-    "header": "\033[95m",
-    "blue": "\033[94m",
-    "green": "\033[92m",
-    "yellow": "\033[93m",
-    "red": "\033[91m",
-    "bold": "\033[1m",
-    "end": "\033[0m",
+	"header": "\033[95m",
+	"blue":   "\033[94m",
+	"green":  "\033[92m",
+	"yellow": "\033[93m",
+	"red":    "\033[91m",
+	"bold":   "\033[1m",
+	"end":    "\033[0m",
 }
 
 func wrapColor(s string, color string) string {
@@ -30,9 +30,9 @@ func logColor(s string, color string) {
 }
 
 type SweetNothing struct {
-	ID string
-	Addr string
-	Body string
+	ID        string
+	Addr      string
+	Body      string
 	Timestamp time.Time
 }
 
@@ -41,7 +41,7 @@ func (s SweetNothing) String() string {
 }
 
 type LocalInfo struct {
-	ip string
+	ip         string
 	ListenPort string
 }
 
@@ -121,7 +121,7 @@ func startScanner() {
 	for {
 		s.Scan()
 		text := s.Text()
-		if (len(text) > 0) {
+		if len(text) > 0 {
 			whisper := SweetNothing{uniqueId(), localInfo.Addr(), s.Text(), time.Now().UTC()}
 			sendMessage(whisper)
 		}
@@ -140,15 +140,15 @@ func main() {
 	if len(port) < 4 {
 		log.Fatalf("Invalid listen port (%s)", port)
 	}
-	
+
 	localInfo.ListenPort = port
 	recipientRegistry[0] = localInfo.Addr()
 
 	go startScanner()
-	
+
 	listenChan := make(chan SweetNothing)
 	go startListener(listenChan)
 	for msg := range listenChan {
-	    fmt.Println(msg)
+		fmt.Println(msg)
 	}
 }
