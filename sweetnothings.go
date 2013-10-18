@@ -9,6 +9,8 @@ import (
 	"net"
 	"os"
 	"time"
+	"sync"
+	"strings"
 )
 
 var colors = map[string]string{
@@ -25,10 +27,22 @@ func wrapColor(s string, color string) string {
 	return fmt.Sprintf("%s%s%s", colors[color], s, colors["end"])
 }
 
+func bold(s string) string {
+	return wrapColor(s, "bold")
+}
+
+func statusLn(s string) {
+	msg := fmt.Sprintf("[%s]", s)
+	fmt.Println(wrapColor(msg, "blue"))
+}
+
 func logColor(s string, color string) {
 	log.Println(wrapColor(s, color))
 }
 
+/**
+ * SweetNothing
+ */
 type SweetNothing struct {
 	ID        string
 	Addr      string
@@ -37,9 +51,48 @@ type SweetNothing struct {
 }
 
 func (s SweetNothing) String() string {
-	return fmt.Sprintf("%s %s", wrapColor(s.Addr, "bold"), s.Body)
+	return fmt.Sprintf("%s %s", bold(s.Addr), s.Body)
 }
 
+/**
+ * Peers
+ */
+type Peers struct {
+	channels map[string]chan<- SweetNothing
+	mu sync.RWMutex
+}
+
+func (p *Peers) Add(addr string) <-chan SweetNothing {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if _, ok := p.channels[addr]; ok {
+		return nil
+	}
+	c := make(chan SweetNothing)
+	p.channels[addr] = c
+	return c
+}
+
+func (p *Peers) Remove(addr string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.channels, addr)
+}
+
+func (p *Peers) List() []chan<- SweetNothing {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	
+	l := make([]chan<- SweetNothing, 0, len(p.channels))
+	for _, ch := range p.channels {
+		l = append(l, ch)
+	}
+	return l
+}
+
+/**
+ * LocalInfo
+ */
 type LocalInfo struct {
 	ip         string
 	ListenPort string
@@ -65,7 +118,41 @@ func (i LocalInfo) Addr() string {
 }
 
 var localInfo = new(LocalInfo)
-var recipientRegistry = make([]string, 1)
+var peers = &Peers{channels: make(map[string]chan<- SweetNothing)}
+
+var seenIds = struct {
+	m map[string]bool
+	sync.Mutex
+}{m: make(map[string]bool)}
+
+func SeenId(id string) bool {
+	seenIds.Lock()
+	ok := seenIds.m[id]
+	seenIds.m[id] = true
+	seenIds.Unlock()
+	return ok
+}
+
+var nicknames = struct {
+	m map[string]string
+	sync.Mutex
+}{m: make(map[string]string)}
+
+func nick(addr string) (n string) {
+	if addr == localInfo.Addr() {
+		n = "you"
+	} else if n_, ok := nicknames.m[addr]; ok {
+		n = n_
+	} else {
+		n = addr
+	}
+	return fmt.Sprintf("[%s]", n)
+}
+
+func setNick(addr string, nick string) {
+	nicknames.m[addr] = nick
+	statusLn(fmt.Sprintf("%s nicknamed %s", addr, nick))
+}
 
 func uniqueId() string {
 	now := time.Now()
@@ -80,50 +167,97 @@ func uniqueId() string {
 		now.Nanosecond())
 }
 
-func startListener(c chan SweetNothing) {
-	listenAddr := fmt.Sprintf("0.0.0.0:%s", localInfo.ListenPort)
-	l, err := net.Listen("tcp", listenAddr)
-	if err != nil {
-		log.Fatal(fmt.Sprintf("Error in listen(): %s", err))
-	}
-	log.Println("Listening on", l.Addr())
-
+func serveIncoming(c net.Conn) {
+	var whisper SweetNothing
 	for {
-		con, err := l.Accept()
+		dec := json.NewDecoder(c)
+		err := dec.Decode(&whisper)
 		if err != nil {
-			log.Fatal(fmt.Sprintf("Error on accept: %s", err))
+			break
 		}
-		var received SweetNothing
-		dec := json.NewDecoder(con)
-		dec.Decode(&received)
-		c <- received
-	}
-}
 
-func sendMessageTo(recipientAddr string, s SweetNothing) {
-	c, err := net.Dial("tcp", recipientAddr)
-	if err != nil {
-		log.Fatalf("sendMessage error: %s", err)
+		if SeenId(whisper.ID) {
+			continue
+		}
+		fmt.Printf("%s %s\n", bold(nick(whisper.Addr)), whisper.Body)
+		broadcast(whisper)
+		go dial(whisper.Addr)
 	}
-	enc := json.NewEncoder(c)
-	enc.Encode(s)
 	c.Close()
+	statusLn(fmt.Sprintf("Closed connection to %s", c.RemoteAddr()))
 }
 
-func sendMessage(s SweetNothing) {
-	for _, addr := range recipientRegistry {
-		go sendMessageTo(addr, s)
+func broadcast(whisper SweetNothing) {
+	for _, ch := range peers.List() {
+		select {
+		case ch <- whisper:
+		default:
+			// Message dropped
+		}
 	}
 }
 
-func startScanner() {
+func dial(addr string) {
+	if addr == localInfo.Addr() {
+		return
+	}
+
+	ch := peers.Add(addr)
+	if ch == nil {
+		return
+	}
+	defer peers.Remove(addr)
+
+	statusLn(fmt.Sprintf("Dialing %s", addr))
+
+	c, err := net.Dial("tcp", addr)
+	if err != nil {
+		log.Printf("[Error dialing %s]\n", addr)
+		return
+	}
+
+	statusLn(fmt.Sprintf("Connected to %s", addr))
+
+	defer func() {
+		c.Close()
+		statusLn(fmt.Sprintf("Closed connection to %s", c.RemoteAddr()))
+	}()
+
+	enc := json.NewEncoder(c)
+	for s := range ch {
+		err := enc.Encode(s)
+		if err != nil {
+			log.Printf("[Error encoding message] %v\n", err)
+			return
+		}
+	}
+}
+
+func handleCommand(c string) {
+	parts := strings.Split(strings.ToLower(strings.TrimSpace(c)), " ")
+	switch parts[0] {
+		case "/dial":
+			go dial(parts[1])
+		case "/setnick":
+			if len(parts) == 3 {
+				setNick(parts[1], parts[2])
+			}
+	}
+}
+
+func startInputScanner() {
 	s := bufio.NewScanner(os.Stdin)
 	for {
 		s.Scan()
 		text := s.Text()
-		if len(text) > 0 {
+		if len(text) == 0 {
+			continue
+		}
+		if strings.HasPrefix(text, "/") {
+			handleCommand(text)
+		} else {
 			whisper := SweetNothing{uniqueId(), localInfo.Addr(), s.Text(), time.Now().UTC()}
-			sendMessage(whisper)
+			broadcast(whisper)
 		}
 	}
 	if err := s.Err(); err != nil {
@@ -141,14 +275,25 @@ func main() {
 		log.Fatalf("Invalid listen port (%s)", port)
 	}
 
+	fmt.Println(bold("--- Sweet Nothings ---"))
+
 	localInfo.ListenPort = port
-	recipientRegistry[0] = localInfo.Addr()
 
-	go startScanner()
+	go startInputScanner()
 
-	listenChan := make(chan SweetNothing)
-	go startListener(listenChan)
-	for msg := range listenChan {
-		fmt.Println(msg)
+	listenAddr := fmt.Sprintf("0.0.0.0:%s", localInfo.ListenPort)
+	l, err := net.Listen("tcp", listenAddr)
+	if err != nil {
+		log.Fatal(err)
+	}
+	statusLn(fmt.Sprintf("Local address: %s", localInfo.Addr()))
+	statusLn(fmt.Sprintf("Listening on %s", l.Addr()))
+
+	for {
+		con, err := l.Accept()
+		if err != nil {
+			log.Println("<", fmt.Sprintf("Error on accept: %s", err))
+		}
+		go serveIncoming(con)
 	}
 }
