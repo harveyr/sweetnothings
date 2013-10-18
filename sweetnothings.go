@@ -8,9 +8,9 @@ import (
 	"log"
 	"net"
 	"os"
-	"time"
-	"sync"
 	"strings"
+	"sync"
+	"time"
 )
 
 var colors = map[string]string{
@@ -59,7 +59,7 @@ func (s SweetNothing) String() string {
  */
 type Peers struct {
 	channels map[string]chan<- SweetNothing
-	mu sync.RWMutex
+	mu       sync.RWMutex
 }
 
 func (p *Peers) Add(addr string) <-chan SweetNothing {
@@ -82,7 +82,7 @@ func (p *Peers) Remove(addr string) {
 func (p *Peers) List() []chan<- SweetNothing {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	
+
 	l := make([]chan<- SweetNothing, 0, len(p.channels))
 	for _, ch := range p.channels {
 		l = append(l, ch)
@@ -236,12 +236,12 @@ func dial(addr string) {
 func handleCommand(c string) {
 	parts := strings.Split(strings.ToLower(strings.TrimSpace(c)), " ")
 	switch parts[0] {
-		case "/dial":
-			go dial(parts[1])
-		case "/setnick":
-			if len(parts) == 3 {
-				setNick(parts[1], parts[2])
-			}
+	case "/dial":
+		go dial(parts[1])
+	case "/setnick":
+		if len(parts) == 3 {
+			setNick(parts[1], parts[2])
+		}
 	}
 }
 
